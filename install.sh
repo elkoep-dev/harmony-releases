@@ -1148,6 +1148,14 @@ main() {
   log_info "Harmony installer v${INSTALLER_VERSION} started."
 
   parse_args "$@"
+
+  # When invoked via `curl ... | sudo bash`, the script's stdin is the pipe,
+  # not the keyboard — so the whiptail TUI renders but can't read keypresses.
+  # Reattach the controlling terminal so the interactive prompts work.
+  if [ "$NON_INTERACTIVE" -eq 0 ] && [ ! -t 0 ] && [ -e /dev/tty ]; then
+    exec </dev/tty || true
+  fi
+
   preflight_checks
   tui_init
 
