@@ -102,6 +102,12 @@ generate_password() {
 # ---------------------------------------------------------------------------
 
 tui_init() {
+  # --non-interactive must win even when whiptail/dialog are installed,
+  # otherwise gauges/prompts run on terminals that can't render them.
+  if [ "$NON_INTERACTIVE" -eq 1 ]; then
+    TUI_MODE="plain"
+    return
+  fi
   if check_command whiptail; then
     TUI_CMD="whiptail"
     TUI_MODE="tui"
@@ -110,10 +116,6 @@ tui_init() {
   if check_command dialog; then
     TUI_CMD="dialog"
     TUI_MODE="tui"
-    return
-  fi
-  if [ "$NON_INTERACTIVE" -eq 1 ]; then
-    TUI_MODE="plain"
     return
   fi
   if check_command apt-get; then
