@@ -75,12 +75,16 @@ die() {
 cleanup() {
   local exit_code=$?
   if [ $exit_code -ne 0 ] && [ $INSTALL_STARTED -eq 1 ]; then
-    log_error "Installation failed (exit code $exit_code). Cleaning up..."
     if [ $CONTAINERS_STARTED -eq 1 ]; then
-      cd "$INSTALL_DIR" 2>/dev/null && docker compose down 2>/dev/null || true
-    fi
-    if [ $TARBALL_EXTRACTED -eq 1 ] && [ "$HAD_EXISTING_INSTALL" -eq 0 ]; then
-      rm -rf "$INSTALL_DIR" 2>/dev/null || true
+      # Services already came up — a late/post-install step failed. Do NOT tear
+      # down or delete a running, possibly-registered stack; leave it in place.
+      log_error "A post-install step failed (exit code $exit_code), but Harmony services are already running at ${INSTALL_DIR} and were left intact."
+      log_error "Review ${LOG_FILE}; you can finish setup from the Administration UI."
+    else
+      log_error "Installation failed (exit code $exit_code) before services started. Cleaning up..."
+      if [ $TARBALL_EXTRACTED -eq 1 ] && [ "$HAD_EXISTING_INSTALL" -eq 0 ]; then
+        rm -rf "$INSTALL_DIR" 2>/dev/null || true
+      fi
     fi
   fi
   rm -f /tmp/harmony-*.tar.gz.tmp 2>/dev/null || true
@@ -869,7 +873,7 @@ post_install() {
   local i=0
   while [ $i -lt $max_retries ]; do
     if docker compose exec -T hrs-mariadb mariadb -u root -p"${password}" hrs \
-      -e "UPDATE config SET value='${HOTEL_NAME}' WHERE key_name='hotel_name';" >>"$LOG_FILE" 2>&1; then
+      -e "UPDATE config SET hotel_name='${HOTEL_NAME}' WHERE ID>0;" >>"$LOG_FILE" 2>&1; then
       log_info "Hotel name set to: $HOTEL_NAME"
       break
     fi
@@ -1000,7 +1004,7 @@ apply_portal_license() {
     log_info "No license assigned to this project yet — server is UNLICENSED until activated."
     return
   fi
-  [ "$max_gw" = "null" ] && max_gw="no limit"
+  if [ "$max_gw" = "null" ] || [ -z "$max_gw" ]; then max_gw="no limit"; fi
 
   local password="${ADMIN_PASSWORD:-webmodul}"
   local sql="UPDATE config SET license_key='${lic_key}', license_name='${lic_name}', max_gateways='${max_gw}', max_rooms='no limit', license_valid_from=NOW(), license_valid_to='no limit time' WHERE ID>0;"
