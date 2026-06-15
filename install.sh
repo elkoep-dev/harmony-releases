@@ -1099,7 +1099,14 @@ detect_existing_install() {
   current_ver=$(cat "${INSTALL_DIR}/VERSION.txt" 2>/dev/null || echo "unknown")
 
   if [ "$NON_INTERACTIVE" -eq 1 ]; then
-    die "Existing Harmony installation found (v${current_ver}) at ${INSTALL_DIR}.\nUse upgrade.sh for upgrades, or remove the directory first."
+    log_info "Existing Harmony v${current_ver} found at ${INSTALL_DIR} — upgrading in place (data preserved)."
+    collect_version
+    download_tarball
+    if [ -x "${INSTALL_DIR}/upgrade.sh" ]; then
+      exec "${INSTALL_DIR}/upgrade.sh" "$TARBALL_PATH"
+    else
+      die "upgrade.sh not found at ${INSTALL_DIR}/upgrade.sh"
+    fi
   fi
 
   if tui_yesno "Existing Installation Detected" \
@@ -1155,11 +1162,13 @@ main() {
 
   parse_args "$@"
 
-  # When invoked via `curl ... | sudo bash`, the script's stdin is the pipe,
-  # not the keyboard — so the whiptail TUI renders but can't read keypresses.
-  # Reattach the controlling terminal so the interactive prompts work.
-  if [ "$NON_INTERACTIVE" -eq 0 ] && [ ! -t 0 ] && [ -e /dev/tty ]; then
-    exec </dev/tty || true
+  # A piped invocation (`curl ... | sudo bash`) has no usable keyboard — stdin
+  # is the pipe, so a TUI would render but never receive keypresses. When stdin
+  # is not a terminal, run headless: defaults + provided flags, no prompts.
+  # (For interactive setup, download then run: `sudo bash install.sh`.)
+  if [ "$NON_INTERACTIVE" -eq 0 ] && [ ! -t 0 ]; then
+    NON_INTERACTIVE=1
+    log_info "No interactive terminal (piped install) — running non-interactively with defaults."
   fi
 
   preflight_checks
