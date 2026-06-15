@@ -39,6 +39,13 @@ SELECTED_VERSION=""
 TARBALL_PATH=""
 NON_INTERACTIVE=0
 
+# Harmony Cloud Portal integration
+PORTAL_URL="https://harmony-portal.onrender.com"
+REGISTRATION_TOKEN=""
+SKIP_PORTAL=0
+AUTO_UPDATE="false"
+PORTAL_REGISTERED=0
+
 TUI_CMD=""
 TUI_MODE="tui"
 
@@ -742,7 +749,7 @@ start_services() {
       echo "XXX"
       echo "Starting containers..."
       echo "XXX"
-      sudo -E docker compose up -d >>"$LOG_FILE" 2>&1
+      sudo -E docker compose up -d --remove-orphans >>"$LOG_FILE" 2>&1
       echo 70
       echo "XXX"
       echo "Waiting for MariaDB to be healthy..."
@@ -754,18 +761,15 @@ start_services() {
     echo "  Building containers (this may take a few minutes)..."
     docker compose build >>"$LOG_FILE" 2>&1 || true
     echo "  Starting containers..."
-    sudo -E docker compose up -d >>"$LOG_FILE" 2>&1
+    sudo -E docker compose up -d --remove-orphans >>"$LOG_FILE" 2>&1
   fi
 
   CONTAINERS_STARTED=1
 
   wait_for_healthy
 
-  # Copy BUS driver binary if script exists
-  if [ -x "${INSTALL_DIR}/scripts/copy-bus-driver-binary.sh" ]; then
-    log_info "Installing BUS_Driver binary..."
-    INSTALL_DIR="$INSTALL_DIR" "${INSTALL_DIR}/scripts/copy-bus-driver-binary.sh" >>"$LOG_FILE" 2>&1 || true
-  fi
+  # Drivers (BUS + eLAN) run inside the app container from the prebuilt
+  # binaries in the release tree (start_all.sh) — no separate driver build.
 
   # Apply SQL schema (same logic as install.sh)
   if docker compose exec -T hrs-mariadb test -f /docker-entrypoint-initdb.d/01-bootstrap.sh 2>/dev/null; then
@@ -900,12 +904,147 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Section 10b: Harmony Cloud Portal registration & heartbeat agent
+# ---------------------------------------------------------------------------
+
+register_with_portal() {
+  if [ "$SKIP_PORTAL" -eq 1 ]; then
+    log_info "Portal registration skipped (--skip-portal)."
+    return
+  fi
+  if [ -z "$REGISTRATION_TOKEN" ]; then
+    log_info "No registration token provided — skipping portal registration."
+    log_info "Register later: ${INSTALL_DIR}/portal-agent/register-portal.sh --registration-token <TOKEN>"
+    return
+  fi
+
+  log_info "Registering with Harmony Cloud Portal at ${PORTAL_URL}..."
+  . /etc/os-release 2>/dev/null || true
+  local docker_ver
+  docker_ver=$(docker --version 2>/dev/null | grep -oP '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "unknown")
+
+  local payload
+  payload=$(cat <<JSON
+{
+  "hotel_name": "${HOTEL_NAME}",
+  "version": "${SELECTED_VERSION}",
+  "server_ip": "${SERVER_IP}",
+  "os": "${PRETTY_NAME:-${ID:-unknown}}",
+  "docker_version": "${docker_ver}",
+  "ports": {"landing": ${LANDING_PORT}, "admin": ${ADMIN_PORT}, "reception": ${RECEPTION_PORT}}
+}
+JSON
+  )
+
+  local response http_code body api_key
+  response=$(curl -sS -w '\n%{http_code}' \
+    -X POST "${PORTAL_URL%/}/api/v1/register" \
+    -H "Content-Type: application/json" \
+    -H "X-Harmony-Registration-Token: ${REGISTRATION_TOKEN}" \
+    --data "$payload" 2>>"$LOG_FILE") || {
+      log_warn "Could not reach the portal. Harmony is installed and running; registration can be retried later."
+      return
+    }
+  http_code=$(printf '%s' "$response" | tail -n1)
+  body=$(printf '%s' "$response" | sed '$d')
+
+  if [ "$http_code" != "200" ]; then
+    log_warn "Portal registration failed (HTTP ${http_code}). Harmony is running; you can retry registration later."
+    log_warn "Response: ${body}"
+    return
+  fi
+
+  api_key=$(printf '%s' "$body" | grep -oE '"api_key"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"api_key"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+  if [ -z "$api_key" ]; then
+    log_warn "Portal response did not contain an API key. Skipping heartbeat setup."
+    return
+  fi
+
+  mkdir -p "$METADATA_DIR"
+  cat > "${METADATA_DIR}/portal.json" <<JSON
+{
+  "portal_url": "${PORTAL_URL%/}",
+  "api_key": "${api_key}",
+  "auto_update": ${AUTO_UPDATE},
+  "registered_at": "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+}
+JSON
+  chmod 600 "${METADATA_DIR}/portal.json"
+  PORTAL_REGISTERED=1
+  log_info "Registered with portal. Credentials saved to ${METADATA_DIR}/portal.json"
+
+  # Expose portal creds to the app container (for in-app license activation).
+  if [ -f "${INSTALL_DIR}/.env" ]; then
+    sed -i '/^PORTAL_URL=/d;/^PORTAL_HRS_API_KEY=/d' "${INSTALL_DIR}/.env" 2>/dev/null || true
+    {
+      echo "PORTAL_URL=${PORTAL_URL%/}"
+      echo "PORTAL_HRS_API_KEY=${api_key}"
+    } >> "${INSTALL_DIR}/.env"
+    ( cd "$INSTALL_DIR" && docker compose up -d hrs-app >>"$LOG_FILE" 2>&1 ) || true
+  fi
+
+  apply_portal_license "$body"
+  install_heartbeat_agent
+}
+
+# Apply the license returned in the registration response into the app's
+# config table, so a portal-first install boots already licensed.
+apply_portal_license() {
+  local body="$1"
+  local lic_key lic_name max_gw
+  lic_key=$(printf '%s' "$body" | grep -oE '"license_key"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/')
+  lic_name=$(printf '%s' "$body" | grep -oE '"tier_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/')
+  max_gw=$(printf '%s' "$body" | grep -oE '"max_gateways"[[:space:]]*:[[:space:]]*(null|[0-9]+)' | head -1 | sed -E 's/.*:[[:space:]]*//')
+
+  if [ -z "$lic_key" ] || [ -z "$lic_name" ]; then
+    log_info "No license assigned to this project yet — server is UNLICENSED until activated."
+    return
+  fi
+  [ "$max_gw" = "null" ] && max_gw="no limit"
+
+  local password="${ADMIN_PASSWORD:-webmodul}"
+  local sql="UPDATE config SET license_key='${lic_key}', license_name='${lic_name}', max_gateways='${max_gw}', max_rooms='no limit', license_valid_from=NOW(), license_valid_to='no limit time' WHERE ID>0;"
+  if docker compose exec -T hrs-mariadb mariadb -u root -p"${password}" hrs -e "$sql" >>"$LOG_FILE" 2>&1; then
+    log_info "License activated: ${lic_name} (${max_gw} gateways)."
+  else
+    log_warn "Could not write license to the database; activate it later from Administration > Licensing."
+  fi
+}
+
+install_heartbeat_agent() {
+  local agent_src="${INSTALL_DIR}/portal-agent"
+  if [ ! -f "${agent_src}/harmony-heartbeat.py" ]; then
+    log_warn "Heartbeat agent not found in package (${agent_src}); skipping timer setup."
+    return
+  fi
+
+  cp "${agent_src}/harmony-heartbeat.py" "${METADATA_DIR}/harmony-heartbeat.py"
+  chmod +x "${METADATA_DIR}/harmony-heartbeat.py"
+
+  if check_command systemctl; then
+    cp "${agent_src}/harmony-heartbeat.service" /etc/systemd/system/ 2>/dev/null || true
+    cp "${agent_src}/harmony-heartbeat.timer" /etc/systemd/system/ 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable --now harmony-heartbeat.timer 2>/dev/null || true
+    # Fire one heartbeat immediately so the portal shows the hotel online.
+    systemctl start harmony-heartbeat.service 2>/dev/null || true
+    log_info "Heartbeat timer installed (every 15 min)."
+  else
+    log_warn "systemd not available — heartbeat agent installed but not scheduled."
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Section 11: Success screen
 # ---------------------------------------------------------------------------
 
 show_success() {
   local pw_display="webmodul"
   [ -n "$ADMIN_PASSWORD" ] && pw_display="(as configured)"
+
+  local portal_status="not registered (run with --registration-token to enable)"
+  [ "$SKIP_PORTAL" -eq 1 ] && portal_status="skipped"
+  [ "$PORTAL_REGISTERED" -eq 1 ] && portal_status="registered, heartbeat every 15 min"
 
   local message
   message=$(cat <<EOF
@@ -923,6 +1062,8 @@ Next steps:
   1. Open Administration and configure the hotel
   2. Add automation gateways when hardware is ready
   3. For updates: Administration > Settings > Firmware
+
+  Cloud Portal:      ${portal_status}
 
 Logs:  cd ${INSTALL_DIR} && docker compose logs -f
 Log file: ${LOG_FILE}
@@ -985,6 +1126,10 @@ parse_args() {
       --landing-port)   LANDING_PORT="$2"; shift 2 ;;
       --admin-port)     ADMIN_PORT="$2"; shift 2 ;;
       --reception-port) RECEPTION_PORT="$2"; shift 2 ;;
+      --portal-url)         PORTAL_URL="$2"; shift 2 ;;
+      --registration-token) REGISTRATION_TOKEN="$2"; shift 2 ;;
+      --skip-portal)        SKIP_PORTAL=1; shift ;;
+      --auto-update)        AUTO_UPDATE="true"; shift ;;
       --help|-h)
         head -14 "$0" 2>/dev/null | tail -12 || true
         exit 0
@@ -1030,6 +1175,7 @@ main() {
   generate_env
   start_services
   post_install
+  register_with_portal
   show_success
 }
 
