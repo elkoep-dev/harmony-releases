@@ -40,7 +40,7 @@ TARBALL_PATH=""
 NON_INTERACTIVE=0
 
 # Harmony Cloud Portal integration
-PORTAL_URL="https://harmony-portal.onrender.com"
+PORTAL_URL="https://harmony-portal.inels.com"
 REGISTRATION_TOKEN=""
 SKIP_PORTAL=0
 AUTO_UPDATE="false"
