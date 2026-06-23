@@ -2,7 +2,7 @@
 
 Public distribution repository for iNELS Harmony hotel automation platform.
 
-**Current release: 1.28.7** — Harmony Cloud Portal integration, BUS + eLAN driver binaries bundled.
+**Current release: 1.29.0** — Harmony Cloud Portal integration, BUS + eLAN driver binaries bundled.
 
 ## Quick install
 
@@ -15,7 +15,7 @@ curl -sL https://raw.githubusercontent.com/elkoep-dev/harmony-releases/main/inst
 
 The installer will:
 - Install Docker if needed
-- Download **Harmony 1.28.7** (latest GitHub release)
+- Download **Harmony 1.29.0** (latest GitHub release)
 - Configure and start all services
 - Register with the Harmony Cloud Portal and apply the project license
 
@@ -32,7 +32,7 @@ The installer will:
 ```bash
 sudo bash install.sh \
   --non-interactive \
-  --version 1.28.7 \
+  --version 1.29.0 \
   --registration-token hrt_xxxxxxxxxxxx \
   --hotel-name "Grand Palace Hotel" \
   --password "securepass123"
