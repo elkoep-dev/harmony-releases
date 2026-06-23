@@ -1098,6 +1098,34 @@ show_welcome() {
     "Welcome to the Harmony installer (v${INSTALLER_VERSION}).\n\nThis will install the Harmony hotel automation platform on this server.\n\nThe installer will:\n  - Install Docker if needed\n  - Download the latest Harmony release\n  - Configure and start all services\n\nPress OK to continue."
 }
 
+ensure_upgrade_script() {
+  if [ -x "${INSTALL_DIR}/upgrade.sh" ]; then
+    return 0
+  fi
+  if [ -z "$TARBALL_PATH" ] || [ ! -f "$TARBALL_PATH" ]; then
+    die "upgrade.sh not found at ${INSTALL_DIR}/upgrade.sh (download package first)"
+  fi
+  log_info "Legacy install has no upgrade.sh — extracting from downloaded package..."
+  if ! tar xzf "$TARBALL_PATH" -O hrs-container/upgrade.sh > "${INSTALL_DIR}/upgrade.sh" 2>>"$LOG_FILE"; then
+    die "upgrade.sh not found at ${INSTALL_DIR}/upgrade.sh and not in package tarball"
+  fi
+  chmod +x "${INSTALL_DIR}/upgrade.sh"
+}
+
+run_in_place_upgrade() {
+  ensure_upgrade_script
+  log_info "Delegating to upgrade.sh..."
+  ( cd "$INSTALL_DIR" && "$INSTALL_DIR/upgrade.sh" "$TARBALL_PATH" )
+  SELECTED_VERSION=$(tr -d '[:space:]' < "${INSTALL_DIR}/VERSION.txt" 2>/dev/null || echo "$SELECTED_VERSION")
+  SERVER_IP="${SERVER_IP:-$(hostname -I 2>/dev/null | awk '{print $1}')}"
+  if [ -n "$REGISTRATION_TOKEN" ] && [ "$SKIP_PORTAL" -eq 0 ]; then
+    cd "$INSTALL_DIR" || die "Cannot enter ${INSTALL_DIR}"
+    register_with_portal
+  fi
+  show_success
+  exit 0
+}
+
 detect_existing_install() {
   if [ ! -f "${INSTALL_DIR}/docker-compose.yml" ]; then
     return
@@ -1111,11 +1139,7 @@ detect_existing_install() {
     log_info "Existing Harmony v${current_ver} found at ${INSTALL_DIR} — upgrading in place (data preserved)."
     collect_version
     download_tarball
-    if [ -x "${INSTALL_DIR}/upgrade.sh" ]; then
-      exec "${INSTALL_DIR}/upgrade.sh" "$TARBALL_PATH"
-    else
-      die "upgrade.sh not found at ${INSTALL_DIR}/upgrade.sh"
-    fi
+    run_in_place_upgrade
   fi
 
   if tui_yesno "Existing Installation Detected" \
@@ -1123,13 +1147,7 @@ detect_existing_install() {
 
     collect_version
     download_tarball
-
-    log_info "Delegating to upgrade.sh..."
-    if [ -x "${INSTALL_DIR}/upgrade.sh" ]; then
-      exec "${INSTALL_DIR}/upgrade.sh" "$TARBALL_PATH"
-    else
-      die "upgrade.sh not found at ${INSTALL_DIR}/upgrade.sh"
-    fi
+    run_in_place_upgrade
   else
     echo "Installation aborted."
     exit 0
