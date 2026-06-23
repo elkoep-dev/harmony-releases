@@ -53,6 +53,7 @@ INSTALL_STARTED=0
 CONTAINERS_STARTED=0
 TARBALL_EXTRACTED=0
 HAD_EXISTING_INSTALL=0
+CREATED_INSTALL_DIR=0
 
 # ---------------------------------------------------------------------------
 # Section 2: Utility functions
@@ -82,8 +83,13 @@ cleanup() {
       log_error "Review ${LOG_FILE}; you can finish setup from the Administration UI."
     else
       log_error "Installation failed (exit code $exit_code) before services started. Cleaning up..."
-      if [ $TARBALL_EXTRACTED -eq 1 ] && [ "$HAD_EXISTING_INSTALL" -eq 0 ]; then
+      # Only remove the install dir if THIS run created it. Never delete a
+      # pre-existing directory — it may hold a working install and its
+      # bind-mounted MariaDB data (no named volume to fall back on).
+      if [ $TARBALL_EXTRACTED -eq 1 ] && [ "$HAD_EXISTING_INSTALL" -eq 0 ] && [ "$CREATED_INSTALL_DIR" -eq 1 ]; then
         rm -rf "$INSTALL_DIR" 2>/dev/null || true
+      else
+        log_error "Left ${INSTALL_DIR} in place (pre-existing directory not created by this run)."
       fi
     fi
   fi
@@ -664,6 +670,9 @@ download_tarball() {
 
 extract_tarball() {
   log_info "Extracting to $INSTALL_DIR..."
+  # Record whether this dir already existed: cleanup must never delete a
+  # directory it did not create (protects a pre-existing install + its DB).
+  [ -d "$INSTALL_DIR" ] || CREATED_INSTALL_DIR=1
   mkdir -p "$INSTALL_DIR"
   tar xzf "$TARBALL_PATH" -C "$INSTALL_DIR" --strip-components=1
   TARBALL_EXTRACTED=1
