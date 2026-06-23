@@ -23,8 +23,8 @@ readonly INSTALLER_VERSION="1.0.0"
 readonly GITHUB_OWNER="elkoep-dev"
 readonly GITHUB_REPO="harmony-releases"
 readonly GITHUB_API="https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases"
-readonly INSTALL_DIR="/opt/hrs-container"
-readonly METADATA_DIR="${INSTALL_DIR}/.harmony"
+INSTALL_DIR="${INSTALL_DIR:-/opt/hrs-container}"
+METADATA_DIR="${INSTALL_DIR}/.harmony"
 readonly LOG_FILE="/var/log/harmony-install.log"
 readonly MIN_DISK_MB=3000
 
@@ -668,7 +668,30 @@ download_tarball() {
   fi
 }
 
+resolve_install_dir() {
+  if [ -f "${INSTALL_DIR}/docker-compose.yml" ]; then
+    METADATA_DIR="${INSTALL_DIR}/.harmony"
+    return 0
+  fi
+  if [ -z "${TARBALL_PATH:-}" ] || [ ! -f "$TARBALL_PATH" ]; then
+    return 0
+  fi
+  local tmp
+  tmp=$(mktemp -d)
+  tar xzf "$TARBALL_PATH" -C "$tmp" hrs-container/scripts/docker-preflight.sh 2>/dev/null || true
+  if [ -f "$tmp/hrs-container/scripts/docker-preflight.sh" ]; then
+    # shellcheck source=/dev/null
+    . "$tmp/hrs-container/scripts/docker-preflight.sh"
+    harmony_docker_preflight || true
+    harmony_resolve_install_dir
+    METADATA_DIR="${INSTALL_DIR}/.harmony"
+    log_info "Resolved install directory: $INSTALL_DIR"
+  fi
+  rm -rf "$tmp"
+}
+
 extract_tarball() {
+  resolve_install_dir
   log_info "Extracting to $INSTALL_DIR..."
   # Record whether this dir already existed: cleanup must never delete a
   # directory it did not create (protects a pre-existing install + its DB).
@@ -707,7 +730,10 @@ PATCH_GIT_BRANCH=main
 GITHUB_TOKEN=
 
 MQTT_HOST=hrs-mosquitto
+DB_HOST=hrs-mariadb
 EOF
+  mkdir -p "${INSTALL_DIR}/env"
+  cp "${INSTALL_DIR}/.env" "${INSTALL_DIR}/env/.env"
   umask 022
 
   if [ "$LANDING_PORT" != "80" ]; then
@@ -739,6 +765,12 @@ start_services() {
   INSTALL_STARTED=1
 
   cd "$INSTALL_DIR"
+
+  if [ -f "${INSTALL_DIR}/scripts/docker-preflight.sh" ]; then
+    # shellcheck source=/dev/null
+    . "${INSTALL_DIR}/scripts/docker-preflight.sh"
+    harmony_docker_preflight || die "Docker preflight failed (see $LOG_FILE)"
+  fi
 
   # Source db-defaults for any env resolution
   if [ -f "${INSTALL_DIR}/scripts/db-defaults.sh" ]; then
