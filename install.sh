@@ -1026,13 +1026,11 @@ JSON
   PORTAL_REGISTERED=1
   log_info "Registered with portal. Credentials saved to ${METADATA_DIR}/portal.json"
 
-  # Expose portal creds to the app container (for in-app license activation).
-  if [ -f "${INSTALL_DIR}/.env" ]; then
-    sed -i '/^PORTAL_URL=/d;/^PORTAL_HRS_API_KEY=/d' "${INSTALL_DIR}/.env" 2>/dev/null || true
-    {
-      echo "PORTAL_URL=${PORTAL_URL%/}"
-      echo "PORTAL_HRS_API_KEY=${api_key}"
-    } >> "${INSTALL_DIR}/.env"
+  # Expose portal creds to env/.env (mounted in hrs-app as /env/.env).
+  if [ -f "${INSTALL_DIR}/scripts/db-defaults.sh" ]; then
+    # shellcheck source=/dev/null
+    . "${INSTALL_DIR}/scripts/db-defaults.sh"
+    harmony_write_portal_env "$INSTALL_DIR" "${PORTAL_URL%/}" "$api_key"
     ( cd "$INSTALL_DIR" && docker compose up -d hrs-app >>"$LOG_FILE" 2>&1 ) || true
   fi
 
