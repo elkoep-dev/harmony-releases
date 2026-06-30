@@ -754,6 +754,14 @@ EOF
   fi
 
   log_info "Configuration written to ${INSTALL_DIR}/.env"
+
+  if [ -f "${INSTALL_DIR}/scripts/db-defaults.sh" ]; then
+    # shellcheck source=/dev/null
+    . "${INSTALL_DIR}/scripts/db-defaults.sh"
+    harmony_db_migrate_env_file "${INSTALL_DIR}/env/.env"
+    cp "${INSTALL_DIR}/env/.env" "${INSTALL_DIR}/.env"
+    log_info "Normalized DB_HOST/MQTT_HOST for in-container apps (127.0.0.1 via socat)."
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -815,23 +823,21 @@ start_services() {
 
   wait_for_healthy
 
-  # Drivers (BUS + eLAN) run inside the app container from the prebuilt
-  # binaries in the release tree (start_all.sh) — no separate driver build.
-
-  # Apply SQL schema (same logic as install.sh)
-  if docker compose exec -T hrs-mariadb test -f /docker-entrypoint-initdb.d/01-bootstrap.sh 2>/dev/null; then
-    log_info "Applying SQL schema..."
-    docker compose exec -T hrs-mariadb bash /docker-entrypoint-initdb.d/01-bootstrap.sh >>"$LOG_FILE" 2>&1 || true
-    for webdir in WEB_Automation WEB_Devices WEB_Rooms WEB_Zones WEB_Users WEB_Settings WEB_Readers WEB_Gateways; do
-      docker compose exec -T hrs-mariadb bash -c \
-        "for f in /docker-entrypoint-initdb.d/sql/${webdir}/*.sql; do [ -f \"\$f\" ] && mariadb -u root -p\"\$MARIADB_ROOT_PASSWORD\" \"\$MARIADB_DATABASE\" < \"\$f\" || true; done" \
-        >>"$LOG_FILE" 2>&1 || true
-    done
+  # Bootstrap DB schema, apps, drivers, and verify (packaging/hrs-container/scripts).
+  if [ -x "${INSTALL_DIR}/scripts/fresh-install-bootstrap.sh" ]; then
+    log_info "Running fresh-install bootstrap..."
+    HOTEL_NAME="$HOTEL_NAME" "${INSTALL_DIR}/scripts/fresh-install-bootstrap.sh" "$INSTALL_DIR" "$HOTEL_NAME" >>"$LOG_FILE" 2>&1 || {
+      log_warn "Bootstrap reported issues — services are running; check ${LOG_FILE} and run verify-install.sh."
+    }
+  else
+    log_warn "fresh-install-bootstrap.sh not found — using legacy SQL/app start."
+    if docker compose exec -T hrs-mariadb test -f /docker-entrypoint-initdb.d/01-bootstrap.sh 2>/dev/null; then
+      log_info "Applying SQL schema..."
+      docker compose exec -T hrs-mariadb bash /docker-entrypoint-initdb.d/01-bootstrap.sh >>"$LOG_FILE" 2>&1 || true
+    fi
+    log_info "Starting application processes..."
+    docker compose exec -T hrs-app /opt/hrs-container/scripts/restart-apps.sh >>"$LOG_FILE" 2>&1 || true
   fi
-
-  # Start Python apps
-  log_info "Starting application processes..."
-  docker compose exec -T hrs-app /opt/hrs-container/scripts/restart-apps.sh >>"$LOG_FILE" 2>&1 || true
 
   log_info "All services started."
 }
@@ -1105,6 +1111,8 @@ Harmony ${SELECTED_VERSION} is running.
   Database user:     webmodul
   Database password: ${pw_display}
 
+  Default admin login: admin@hotel.local / harmony
+
 Next steps:
   1. Open Administration and configure the hotel
   2. Add automation gateways when hardware is ready
@@ -1117,7 +1125,7 @@ Log file: ${LOG_FILE}
 EOF
   )
 
-  tui_msgbox "Installation Complete!" "$message"
+  tui_msgbox "Installation Complete!" "$message" || true
   log_info "Installation complete. Harmony ${SELECTED_VERSION} running at http://${SERVER_IP}:${ADMIN_PORT}/"
 }
 
