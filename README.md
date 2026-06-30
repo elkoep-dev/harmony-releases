@@ -2,7 +2,7 @@
 
 Public distribution repository for iNELS Harmony hotel automation platform.
 
-**Current release: 1.0.0** — first harmony-v2 install package (new product line; not an OTA from 1.29.x).
+**Current release: 1.0.3** — harmony-v2 install package (new product line; not an OTA from 1.29.x).
 
 Built from [elkoep-dev/harmony-v2](https://github.com/elkoep-dev/harmony-v2). OTA patches for 1.0.x use Harmony Cloud Portal or `patches/` on harmony-v2.
 
@@ -17,7 +17,7 @@ curl -sL https://raw.githubusercontent.com/elkoep-dev/harmony-releases/main/inst
 
 The installer will:
 - Install Docker if needed
-- Download **Harmony 1.0.0** (latest harmony-v2 GitHub release, or specify `--version`)
+- Download **Harmony 1.0.3** (latest harmony-v2 GitHub release, or specify `--version`)
 - Configure and start all services
 - Register with the Harmony Cloud Portal and apply the project license
 - Set `PATCH_GIT_REPO` to harmony-v2 for GitHub OTA fallback
@@ -35,7 +35,7 @@ The installer will:
 ```bash
 sudo bash install.sh \
   --non-interactive \
-  --version 1.0.0 \
+  --version 1.0.3 \
   --registration-token hrt_xxxxxxxxxxxx \
   --hotel-name "Grand Palace Hotel" \
   --password "securepass123"
@@ -68,4 +68,4 @@ The `install.sh` script in this repo root is the smart installer used by the one
 
 ## Legacy harmony 1.29.x
 
-Older releases (`v1.29.2` … `v1.29.5`) remain available for existing deployments. Upgrading to harmony-v2 **1.0.0** requires a full tarball install or `upgrade.sh`, not patch OTA.
+Older releases (`v1.29.2` … `v1.29.5`) remain available for existing deployments. Upgrading to harmony-v2 **1.0.3** requires a full tarball install or `upgrade.sh`, not patch OTA.
