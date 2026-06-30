@@ -19,7 +19,7 @@ set -euo pipefail
 # Section 1: Constants & defaults
 # ---------------------------------------------------------------------------
 
-readonly INSTALLER_VERSION="1.0.0"
+readonly INSTALLER_VERSION="1.0.1"
 readonly GITHUB_OWNER="elkoep-dev"
 readonly GITHUB_REPO="harmony-releases"
 readonly GITHUB_API="https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases"
@@ -1007,7 +1007,7 @@ JSON
     return
   fi
 
-  api_key=$(printf '%s' "$body" | grep -oE '"api_key"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"api_key"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+  api_key=$(printf '%s' "$body" | grep -oE '"api_key"[[:space:]]*:[[:space:]]*"[^"]+"' | sed -E 's/.*"api_key"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)
   if [ -z "$api_key" ]; then
     log_warn "Portal response did not contain an API key. Skipping heartbeat setup."
     return
@@ -1045,9 +1045,10 @@ JSON
 apply_portal_license() {
   local body="$1"
   local lic_key lic_name max_gw
-  lic_key=$(printf '%s' "$body" | grep -oE '"license_key"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/')
-  lic_name=$(printf '%s' "$body" | grep -oE '"tier_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/')
-  max_gw=$(printf '%s' "$body" | grep -oE '"max_gateways"[[:space:]]*:[[:space:]]*(null|[0-9]+)' | head -1 | sed -E 's/.*:[[:space:]]*//')
+  # grep exits 1 when a field is absent; with pipefail that would abort the installer.
+  lic_key=$(printf '%s' "$body" | grep -oE '"license_key"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)
+  lic_name=$(printf '%s' "$body" | grep -oE '"tier_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)".*/\1/' || true)
+  max_gw=$(printf '%s' "$body" | grep -oE '"max_gateways"[[:space:]]*:[[:space:]]*(null|[0-9]+)' | head -1 | sed -E 's/.*:[[:space:]]*//' || true)
 
   if [ -z "$lic_key" ] || [ -z "$lic_name" ]; then
     log_info "No license assigned to this project yet — server is UNLICENSED until activated."
@@ -1073,6 +1074,14 @@ install_heartbeat_agent() {
 
   cp "${agent_src}/harmony-heartbeat.py" "${METADATA_DIR}/harmony-heartbeat.py"
   chmod +x "${METADATA_DIR}/harmony-heartbeat.py"
+
+  if [ -f "${agent_src}/harmony_portal.py" ]; then
+    cp "${agent_src}/harmony_portal.py" "${METADATA_DIR}/harmony_portal.py"
+  elif [ -f "${INSTALL_DIR}/hrs-app/current/apps/harmony_portal.py" ]; then
+    cp "${INSTALL_DIR}/hrs-app/current/apps/harmony_portal.py" "${METADATA_DIR}/harmony_portal.py"
+  else
+    log_warn "harmony_portal.py not found; heartbeat may fail until portal-agent is repaired."
+  fi
 
   if check_command systemctl; then
     cp "${agent_src}/harmony-heartbeat.service" /etc/systemd/system/ 2>/dev/null || true
