@@ -1031,7 +1031,7 @@ JSON
     # shellcheck source=/dev/null
     . "${INSTALL_DIR}/scripts/db-defaults.sh"
     harmony_write_portal_env "$INSTALL_DIR" "${PORTAL_URL%/}" "$api_key"
-    ( cd "$INSTALL_DIR" && docker compose up -d hrs-app >>"$LOG_FILE" 2>&1 ) || true
+    ( cd "$INSTALL_DIR" && docker compose up -d --force-recreate hrs-app hrs-nginx >>"$LOG_FILE" 2>&1 ) || true
   fi
 
   apply_portal_license "$body"
