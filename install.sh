@@ -19,7 +19,7 @@ set -euo pipefail
 # Section 1: Constants & defaults
 # ---------------------------------------------------------------------------
 
-readonly INSTALLER_VERSION="1.0.3"
+readonly INSTALLER_VERSION="1.0.4"
 readonly GITHUB_OWNER="elkoep-dev"
 readonly GITHUB_REPO="harmony-releases"
 readonly GITHUB_API="https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases"
@@ -710,6 +710,7 @@ generate_env() {
   log_info "Generating configuration..."
 
   local password="${ADMIN_PASSWORD:-webmodul}"
+  local root_password="${MARIADB_ROOT_PASSWORD:-elkoep1234}"
 
   umask 077
   cat > "${INSTALL_DIR}/.env" <<EOF
@@ -717,7 +718,7 @@ generate_env() {
 HARMONY_DB_PASSWORD=${password}
 DB_USER=webmodul
 DB_NAME=hrs
-MARIADB_ROOT_PASSWORD=${password}
+MARIADB_ROOT_PASSWORD=${root_password}
 DB_PASSWORD=${password}
 
 HARMONY_APP_VERSION=${SELECTED_VERSION}
