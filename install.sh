@@ -19,7 +19,7 @@ set -euo pipefail
 # Section 1: Constants & defaults
 # ---------------------------------------------------------------------------
 
-readonly INSTALLER_VERSION="1.0.8"
+readonly INSTALLER_VERSION="1.0.10"
 readonly GITHUB_OWNER="elkoep-dev"
 readonly GITHUB_REPO="harmony-releases"
 readonly GITHUB_API="https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases"
