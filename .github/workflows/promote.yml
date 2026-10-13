@@ -1,0 +1,64 @@
+name: Promote release
+
+# Turns a tested candidate (pre-release) into the latest release; Harmony
+# Portal then decides which hotels are offered it.
+# The files and their signature stay exactly as tested on staging: this only
+# checks them once more and marks the release as the latest.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Candidate to promote (X.Y.Z), tested on staging"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+env:
+  VERSION: ${{ inputs.version }}
+
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: production
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_OPERATORS: ${{ vars.RELEASE_OPERATORS }}
+      TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Authorize human operator, including reruns
+        run: python3 scripts/release_checks.py operator
+
+      - name: Is it a candidate newer than the latest release?
+        run: |
+          echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::bad version"; exit 1; }
+          gh release view "v$VERSION" --json isPrerelease,isDraft,name > candidate.json
+          python3 -c 'import json; from scripts.release_checks import check_candidate; check_candidate(json.load(open("candidate.json")))'
+          latest="$(gh release list --exclude-pre-releases --exclude-drafts --limit 100 \
+            --json tagName --jq '.[].tagName' | sed -n 's/^v\([0-9]*\.[0-9]*\.[0-9]*\)$/\1/p' \
+            | sort -V | tail -1)"
+          if [ -n "$latest" ] && [ "$(printf '%s\n%s\n' "$latest" "$VERSION" | sort -V | tail -1)" != "$VERSION" ]; then
+            echo "::error::$VERSION is not newer than the latest release $latest"; exit 1
+          fi
+
+      - name: Check signature and checksum of the published files
+        run: |
+          mkdir dist && cd dist
+          gh release download "v$VERSION" --pattern "harmony-$VERSION.*"
+          ssh-keygen -Y verify -f ../allowed_signers -I harmony-release -n harmony-release \
+            -s "harmony-$VERSION.manifest.json.sig" < "harmony-$VERSION.manifest.json"
+          want="$(python3 -c "import json; print(json.load(open('harmony-$VERSION.manifest.json'))['artifact']['sha256'])")"
+          echo "$want  harmony-$VERSION.tar.gz" | sha256sum -c -
+
+      - name: Promote
+        run: |
+          gh release edit "v$VERSION" --prerelease=false --latest --title "Harmony $VERSION"
+          echo "v$VERSION is now the latest release; Deploy it to selected projects in Harmony Portal; installation remains a human action." >> "$GITHUB_STEP_SUMMARY"

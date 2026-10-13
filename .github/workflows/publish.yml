@@ -1,0 +1,127 @@
+name: Publish candidate
+
+# Started by the source repo's Release workflow; not meant to be run by hand.
+#   1. take the build from that run (GitHub App, read-only)
+#   2. check it is the build the run reported (sha256)
+#   3. sign the manifest (ssh-keygen -Y sign, namespace harmony-release)
+#   4. publish it as a candidate (pre-release): staging servers offer it, a
+#      hotel only when Harmony Portal deploys it to that hotel (pilot)
+# "Promote release" later turns exactly these files into a release.
+#
+# Runs only in the protected "production" environment (main branch), the only
+# place that holds SIGNING_KEY. Published versions are never replaced.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (X.Y.Z)"
+        required: true
+      sha256:
+        description: "sha256 of harmony-X.Y.Z.tar.gz"
+        required: true
+      source_sha:
+        description: "Full source commit SHA"
+        required: true
+      run_attempt:
+        description: "Exact source run attempt"
+        required: true
+      artifact_id:
+        description: "Immutable release artifact ID"
+        required: true
+      run_id:
+        description: "Release run in the source repo that built it"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: ${{ vars.SOURCE_REPO || 'elkoep-dev/harmony' }}
+  VERSION: ${{ inputs.version }}
+  EXPECTED_SHA256: ${{ inputs.sha256 }}
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  SOURCE_RUN_ID: ${{ inputs.run_id }}
+  SOURCE_RUN_ATTEMPT: ${{ inputs.run_attempt }}
+  SOURCE_ARTIFACT_ID: ${{ inputs.artifact_id }}
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: production
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check inputs and version order
+        run: |
+          echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::bad version"; exit 1; }
+          echo "$EXPECTED_SHA256" | grep -Eq '^[0-9a-f]{64}$' || { echo "::error::bad sha256"; exit 1; }
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "::error::v$VERSION is already published (published versions are never replaced)"; exit 1
+          fi
+          latest="$(gh release list --exclude-pre-releases --exclude-drafts --limit 100 \
+            --json tagName --jq '.[].tagName' | sed -n 's/^v\([0-9]*\.[0-9]*\.[0-9]*\)$/\1/p' \
+            | sort -V | tail -1)"
+          if [ -n "$latest" ] && [ "$(printf '%s\n%s\n' "$latest" "$VERSION" | sort -V | tail -1)" != "$VERSION" ]; then
+            echo "::error::$VERSION is older than the latest release $latest"; exit 1
+          fi
+          echo "SOURCE_OWNER=${SOURCE_REPO%%/*}" >> "$GITHUB_ENV"
+          echo "SOURCE_NAME=${SOURCE_REPO#*/}" >> "$GITHUB_ENV"
+
+      # One-hour token of the release GitHub App, read-only on the source repo.
+      - name: Token for the source repo
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ env.SOURCE_OWNER }}
+          repositories: ${{ env.SOURCE_NAME }}
+          permission-actions: read
+
+      - name: Authorize the exact source run, gates and artifact
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: python3 scripts/release_checks.py provenance
+
+      - name: Download the build
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ inputs.artifact_id }}
+          path: dist
+          repository: ${{ env.SOURCE_REPO }}
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ steps.app.outputs.token }}
+
+      - name: Verify manifest identity and exact package bytes
+        run: python3 scripts/release_checks.py manifest
+
+      - name: Sign manifest
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        run: |
+          umask 077
+          key="$(mktemp)"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$SIGNING_KEY" > "$key"
+          ssh-keygen -q -Y sign -f "$key" -n harmony-release "dist/harmony-$VERSION.manifest.json"
+          ssh-keygen -Y verify -f allowed_signers -I harmony-release -n harmony-release \
+            -s "dist/harmony-$VERSION.manifest.json.sig" < "dist/harmony-$VERSION.manifest.json"
+
+      - name: Publish the candidate
+        run: |
+          cd dist
+          files="harmony-$VERSION.tar.gz harmony-$VERSION.manifest.json harmony-$VERSION.manifest.json.sig install.sh"
+          # shellcheck disable=SC2086 # file list
+          sha256sum $files > SHA256SUMS
+          # shellcheck disable=SC2086
+          gh release create "v$VERSION" --title "Harmony $VERSION (candidate)" --notes-file notes.md \
+            --prerelease $files SHA256SUMS
+          echo "Candidate v$VERSION published. After testing on staging: Actions -> Promote release." >> "$GITHUB_STEP_SUMMARY"

@@ -1,71 +1,48 @@
-# iNELS Harmony — Installation
+# iNELS Harmony releases
 
-Public distribution repository for iNELS Harmony hotel automation platform.
+Signed releases of [iNELS Harmony](https://github.com/elkoep-dev/harmony). Hotel
+servers install and update from here with `harmony-update`.
 
-**Current release: 1.0.3** — harmony-v2 install package (new product line; not an OTA from 1.29.x).
+## Install or upgrade a server
 
-Built from [elkoep-dev/harmony-v2](https://github.com/elkoep-dev/harmony-v2). OTA patches for 1.0.x use Harmony Cloud Portal or `patches/` on harmony-v2.
+On the server, with the release's `install.sh` and its sha256 from the release
+manager:
 
-## Quick install
-
-Run this on a fresh Ubuntu/Debian server (with registration token from the [Harmony Portal](https://harmony-portal.inels.com)):
-
-```bash
-curl -sL https://raw.githubusercontent.com/elkoep-dev/harmony-releases/main/install.sh \
-  | sudo bash -s -- --registration-token hrt_xxxxxxxxxxxx
+```sh
+curl -fsSLO https://github.com/elkoep-dev/harmony-releases/releases/latest/download/install.sh
+sha256sum install.sh
+sudo bash install.sh --registration-token hrt_xxxxxxxxxxxx   # new server
+sudo bash install.sh --upgrade                               # server on 1.0.x
 ```
 
-The installer will:
-- Install Docker if needed
-- Download **Harmony 1.0.3** (latest harmony-v2 GitHub release, or specify `--version`)
-- Configure and start all services
-- Register with the Harmony Cloud Portal and apply the project license
-- Set `PATCH_GIT_REPO` to harmony-v2 for GitHub OTA fallback
+Servers on 1.1 and newer update from their admin UI. The `install.sh` in this
+repository's main branch is the 1.0 installer.
 
-## Requirements
+## Files of a release
 
-- Ubuntu 22.04+ or Debian 12+
-- x86_64 or aarch64 architecture
-- 3 GB free disk space
-- Internet access (or use `--tarball` for offline install)
-- Root/sudo access
+| File | What it is |
+|---|---|
+| `harmony-X.Y.Z.tar.gz` | install and upgrade package |
+| `harmony-X.Y.Z.manifest.json` | version, source commit, sha256 of the package |
+| `harmony-X.Y.Z.manifest.json.sig` | signature of the manifest (`ssh-keygen -Y`, namespace `harmony-release`) |
+| `install.sh` | installer with the trusted public keys |
 
-## CLI options
+Verify by hand:
 
-```bash
-sudo bash install.sh \
-  --non-interactive \
-  --version 1.0.3 \
-  --registration-token hrt_xxxxxxxxxxxx \
-  --hotel-name "Grand Palace Hotel" \
-  --password "securepass123"
+```sh
+ssh-keygen -Y verify -f allowed_signers -I harmony-release -n harmony-release \
+  -s harmony-X.Y.Z.manifest.json.sig < harmony-X.Y.Z.manifest.json
+sha256sum harmony-X.Y.Z.tar.gz   # must equal artifact.sha256 in the manifest
 ```
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--version VERSION` | Install specific version | latest release |
-| `--registration-token TOKEN` | Portal project token (`hrt_…`) | — |
-| `--portal-url URL` | Harmony Portal base URL | harmony-portal.inels.com |
-| `--tarball PATH` | Use local tarball (offline) | — |
-| `--non-interactive` | No prompts, use defaults | off |
-| `--hotel-name NAME` | Hotel name | My Hotel |
-| `--password PASSWORD` | Database password | webmodul |
-| `--interface IFACE` | Network interface | auto-detect |
-| `--landing-port PORT` | Landing page port | 80 |
-| `--admin-port PORT` | Administration port | 81 |
-| `--reception-port PORT` | Reception port | 82 |
-| `--skip-portal` | Install without portal registration | off |
-| `--auto-update` | Opt into automatic FW updates | off |
+## Workflows
 
-## Releases
+| Workflow | Started by | What it does |
+|---|---|---|
+| Publish candidate | the Release workflow of harmony | checks that the build comes from a successful release run on main, signs it and publishes it as a candidate (pre-release) |
+| Promote release | a release operator, after testing on the lab | checks signature and checksum, makes the candidate the latest release |
+| Withdraw release | a release operator | servers stop offering the release; servers running it keep it |
 
-Each GitHub release contains:
-- `harmony-VERSION.tar.gz` — Docker install package (apps, SQL, **BUS_Driver**, **eLAN_Driver**, portal-agent)
-- `harmony-VERSION.sha256` — checksum file
-- `SHA256SUMS` — integrity checksum (legacy)
-
-The `install.sh` script in this repo root is the smart installer used by the one-line `curl | bash` command.
-
-## Legacy harmony 1.29.x
-
-Older releases (`v1.29.2` … `v1.29.5`) remain available for existing deployments. Upgrading to harmony-v2 **1.0.3** requires a full tarball install or `upgrade.sh`, not patch OTA.
+All run in the protected `production` environment (main only), which holds the
+signing key. Published versions are never replaced. `allowed_signers` lists the
+public keys servers trust: the main key and an offline backup key.

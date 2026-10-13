@@ -1,0 +1,49 @@
+name: Withdraw release
+
+# Stops offering a release (e.g. a problem found after promotion). Servers no
+# longer list or install it; servers that already run it keep it until the next
+# release. The files stay for reference. Takes effect immediately.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to withdraw (X.Y.Z)"
+        required: true
+      reason:
+        description: "Why (shown in the release notes)"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  withdraw:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: production
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_OPERATORS: ${{ vars.RELEASE_OPERATORS }}
+      TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+      VERSION: ${{ inputs.version }}
+      REASON: ${{ inputs.reason }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Authorize human operator, including reruns
+        run: python3 scripts/release_checks.py operator
+
+      - name: Withdraw
+        run: |
+          echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::bad version"; exit 1; }
+          gh release view "v$VERSION" -R "$GITHUB_REPOSITORY" --json body --jq .body > notes.md \
+            || { echo "::error::v$VERSION is not published"; exit 1; }
+          { printf '> **Withdrawn:** %s\n\n' "$REASON"; cat notes.md; } > withdrawn.md
+          gh release edit "v$VERSION" -R "$GITHUB_REPOSITORY" --prerelease \
+            --title "Harmony $VERSION (withdrawn)" --notes-file withdrawn.md
+          echo "v$VERSION withdrawn: $REASON" >> "$GITHUB_STEP_SUMMARY"

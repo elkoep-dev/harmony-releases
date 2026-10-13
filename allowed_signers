@@ -1,0 +1,3 @@
+# Harmony release signing keys (ssh-keygen -Y verify, namespace harmony-release): main, then the offline backup.
+harmony-release namespaces="harmony-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICflt0AbWZODuOl4Sjkdoa41mOXtRXyUOWa/ug0Q9tKQ
+harmony-release namespaces="harmony-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILfpv/24j1OPm8SY6mG0LMb3137tt1a24rGsm5Wil3ER
