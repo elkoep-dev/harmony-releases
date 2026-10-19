@@ -26,8 +26,11 @@ on:
       run_attempt:
         description: "Exact source run attempt"
         required: true
-      artifact_id:
-        description: "Immutable release artifact ID"
+      handoff_release_id:
+        description: "Private source release holding the build"
+        required: true
+      handoff_sha256:
+        description: "Handoff index checksum recorded by the source build"
         required: true
       run_id:
         description: "Release run in the source repo that built it"
@@ -47,7 +50,8 @@ env:
   SOURCE_SHA: ${{ inputs.source_sha }}
   SOURCE_RUN_ID: ${{ inputs.run_id }}
   SOURCE_RUN_ATTEMPT: ${{ inputs.run_attempt }}
-  SOURCE_ARTIFACT_ID: ${{ inputs.artifact_id }}
+  HANDOFF_RELEASE_ID: ${{ inputs.handoff_release_id }}
+  HANDOFF_SHA256: ${{ inputs.handoff_sha256 }}
 
 jobs:
   publish:
@@ -85,20 +89,17 @@ jobs:
           owner: ${{ env.SOURCE_OWNER }}
           repositories: ${{ env.SOURCE_NAME }}
           permission-actions: read
+          permission-contents: read
 
-      - name: Authorize the exact source run, gates and artifact
+      - name: Authorize the source run, gates and recorded handoff
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
         run: python3 scripts/release_checks.py provenance
 
-      - name: Download the build
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          artifact-ids: ${{ inputs.artifact_id }}
-          path: dist
-          repository: ${{ env.SOURCE_REPO }}
-          run-id: ${{ inputs.run_id }}
-          github-token: ${{ steps.app.outputs.token }}
+      - name: Download and verify every authorized release asset
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: python3 scripts/release_checks.py download
 
       - name: Verify manifest identity and exact package bytes
         run: python3 scripts/release_checks.py manifest
