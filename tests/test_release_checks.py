@@ -2,6 +2,9 @@ import copy
 import importlib.util
 import hashlib
 import tempfile
+import json
+import os
+from unittest.mock import patch
 import unittest
 from pathlib import Path
 
@@ -25,15 +28,6 @@ class AuthorizationTests(unittest.TestCase):
                            ("head_sha", "b" * 40), ("run_attempt", 1), ("conclusion", "failure")]:
             with self.subTest(key=key), self.assertRaises(checks.Rejected):
                 checks.check_run({**self.run, key: value}, "owner/source", "a" * 40, 2)
-
-    def test_artifact_attempt_binding(self):
-        artifact = {"id": 9, "expired": False, "name": "release-1.2.3-8-2",
-                    "workflow_run": {"id": 8, "head_sha": "a" * 40, "head_branch": "main"}}
-        checks.check_artifact(artifact, "owner/source", 8, 2, 9, "a" * 40, "1.2.3")
-        for key, value in [("id", 10), ("expired", True), ("name", "release-1.2.3-8-1"),
-                           ("workflow_run", {"id": 7, "head_sha": "a" * 40, "head_branch": "main"})]:
-            with self.subTest(key=key), self.assertRaises(checks.Rejected):
-                checks.check_artifact({**artifact, key: value}, "owner/source", 8, 2, 9, "a" * 40, "1.2.3")
 
     def test_human_dispatch_and_rerun(self):
         event = {"sender": {"type": "User"}}
@@ -79,6 +73,105 @@ class AuthorizationTests(unittest.TestCase):
             package.write_bytes(b'modified bytes')
             with self.assertRaises(checks.Rejected):
                 checks.check_manifest(manifest, package, '1.2.3', 'a' * 40, digest)
+
+
+
+
+class HandoffTests(unittest.TestCase):
+    def setUp(self):
+        self.files = {name: {"id": i, "size": 20, "sha256": "b" * 64, "mode": 0o644}
+                      for i, name in enumerate(("harmony-1.2.3.tar.gz", "harmony-1.2.3.manifest.json",
+                                               "install.sh", "notes.md"), 1)}
+        self.index = {"schema": 1, "kind": "build", "repository": "owner/source", "run_id": 8,
+                      "run_attempt": 2, "commit": "a" * 40, "version": "1.2.3", "files": self.files}
+        self.release = {"id": 9, "draft": False, "prerelease": True, "tag_name": "handoff-build-8-2",
+                        "target_commitish": "a" * 40,
+                        "assets": [{"name": name, "id": item["id"], "size": item["size"], "state": "uploaded"}
+                                   for name, item in self.files.items()]}
+        self.seal()
+
+    def seal(self):
+        self.release["body"] = json.dumps(self.index)
+        self.sha = hashlib.sha256(self.release["body"].encode()).hexdigest()
+
+    def check(self):
+        return checks.check_handoff(self.release, "owner/source", 8, 2, 9, "a" * 40, "1.2.3", self.sha)
+
+    def test_handoff_and_authenticated_build_log(self):
+        self.assertEqual(self.check(), self.files)
+        record = json.dumps({"release_id": 9, "sha256": self.sha})
+        checks.check_build_record("2026-10-19T12:00:00.1234567Z HARMONY_RELEASE_HANDOFF=" + record + "\n", 9, self.sha)
+        for log in ("", "HARMONY_RELEASE_HANDOFF=" + record + "\nHARMONY_RELEASE_HANDOFF=" + record,
+                    "HARMONY_RELEASE_HANDOFF=" + json.dumps({"release_id": 10, "sha256": self.sha}),
+                    "HARMONY_RELEASE_HANDOFF=" + json.dumps({"release_id": 9, "sha256": "f" * 64}),
+                    "echo HARMONY_RELEASE_HANDOFF=" + record):
+            with self.subTest(log=log), self.assertRaises(checks.Rejected):
+                checks.check_build_record(log, 9, self.sha)
+
+    def test_state_origin_attempt_and_commit_are_checked(self):
+        for key, value in (("id", 10), ("draft", True), ("prerelease", False),
+                           ("tag_name", "handoff-build-8-1"), ("target_commitish", "main"),
+                           ("body", "{}")):
+            with self.subTest(key=key), self.assertRaises(checks.Rejected):
+                checks.check_handoff({**self.release, key: value}, "owner/source", 8, 2, 9,
+                                     "a" * 40, "1.2.3", self.sha)
+        for key, value in (("kind", "tests"), ("schema", True), ("repository", "other/source"),
+                           ("run_id", 7), ("run_attempt", 1), ("commit", "f" * 40), ("version", "1.2.4")):
+            with self.subTest(key=key), self.assertRaises(checks.Rejected):
+                bad = {**self.index, key: value}
+                self.release["body"] = json.dumps(bad)
+                self.sha = hashlib.sha256(self.release["body"].encode()).hexdigest()
+                self.check()
+        self.index["files"]["../../install.sh"] = self.index["files"].pop("install.sh")
+        self.seal()
+        with self.assertRaises(checks.Rejected):
+            self.check()
+
+    def test_replacement_incomplete_upload_and_size_mismatch(self):
+        for key, value in (("id", 99), ("state", "starter"), ("size", 21)):
+            original = copy.deepcopy(self.release)
+            self.release["assets"][0][key] = value
+            with self.subTest(key=key), self.assertRaises(checks.Rejected):
+                self.check()
+            self.release = original
+        self.release["assets"].append(self.release["assets"][0])
+        with self.assertRaises(checks.Rejected):
+            self.check()
+
+    def test_provenance_reads_log_from_the_canonical_build_job(self):
+        run = {"path": ".github/workflows/release.yml", "head_branch": "main", "event": "push",
+               "head_repository": {"full_name": "owner/source"}, "head_sha": "a" * 40,
+               "run_attempt": 2, "status": "completed", "conclusion": "success"}
+        jobs = [{"id": 101, "name": "build", "status": "completed", "conclusion": "success"},
+                {"id": 102, "name": "gate", "status": "completed", "conclusion": "success"}]
+        env = {"SOURCE_REPO": "owner/source", "VERSION": "1.2.3", "SOURCE_SHA": "a" * 40,
+               "SOURCE_RUN_ID": "8", "SOURCE_RUN_ATTEMPT": "2", "HANDOFF_RELEASE_ID": "9",
+               "HANDOFF_SHA256": self.sha, "EXPECTED_SHA256": "b" * 64}
+        def fetch(path):
+            if path.endswith("/attempts/2"):
+                return run
+            if path.endswith("/jobs?per_page=100&page=1"):
+                return {"jobs": jobs}
+            if path == "repos/owner/source":
+                return {"private": True}
+            if path.endswith("/releases/9"):
+                return self.release
+            self.fail(path)
+        record = "HARMONY_RELEASE_HANDOFF=" + json.dumps({"release_id": 9, "sha256": self.sha})
+        previous = Path.cwd()
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, env), \
+                patch.object(checks, "api", side_effect=fetch), \
+                patch.object(checks.subprocess, "check_output", return_value=record) as log:
+            os.chdir(directory)
+            try:
+                checks.provenance()
+                self.assertEqual(json.loads(Path("authorized-handoff.json").read_text()), self.files)
+                log.assert_called_once_with(["gh", "api", "repos/owner/source/actions/jobs/101/logs"], text=True)
+                jobs[0]["conclusion"] = "failure"
+                with self.assertRaises(checks.Rejected):
+                    checks.provenance()
+            finally:
+                os.chdir(previous)
 
 
 if __name__ == "__main__":
