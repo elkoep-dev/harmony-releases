@@ -157,7 +157,7 @@ class HandoffTests(unittest.TestCase):
             if path.endswith("/releases/9"):
                 return self.release
             self.fail(path)
-        record = "HARMONY_RELEASE_HANDOFF=" + json.dumps({"release_id": 9, "sha256": self.sha})
+        record = "\x1b[32mbuild output\x1b[0m\nHARMONY_RELEASE_HANDOFF=" + json.dumps({"release_id": 9, "sha256": self.sha})
         previous = Path.cwd()
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, env), \
                 patch.object(checks, "api", side_effect=fetch), \
@@ -166,12 +166,41 @@ class HandoffTests(unittest.TestCase):
             try:
                 checks.provenance()
                 self.assertEqual(json.loads(Path("authorized-handoff.json").read_text()), self.files)
-                log.assert_called_once_with(["gh", "api", "repos/owner/source/actions/jobs/101/logs"], text=True)
+                log.assert_called_once_with(["gh", "api", "--allow-escape-sequences",
+                                             "repos/owner/source/actions/jobs/101/logs"], text=True)
                 jobs[0]["conclusion"] = "failure"
                 with self.assertRaises(checks.Rejected):
                     checks.provenance()
             finally:
                 os.chdir(previous)
+
+    def test_download_preserves_binary_bytes_and_rejects_tampering(self):
+        payload = b"\x1b[31m\x00\xffexact package bytes\x1b[0m"
+        name = "harmony-1.2.3.tar.gz"
+        files = {name: {"id": 1, "size": len(payload), "mode": 0o644,
+                        "sha256": hashlib.sha256(payload).hexdigest()}}
+        for body in (payload, payload.replace(b"exact", b"other")):
+            with self.subTest(tampered=body != payload), tempfile.TemporaryDirectory() as directory:
+                previous = Path.cwd()
+                os.chdir(directory)
+                try:
+                    Path("authorized-handoff.json").write_text(json.dumps(files))
+                    def download(command, *, stdout, check):
+                        self.assertEqual(command, ["gh", "api", "--allow-escape-sequences",
+                                                   "repos/owner/source/releases/assets/1",
+                                                   "-H", "Accept: application/octet-stream"])
+                        self.assertTrue(check)
+                        stdout.write(body)
+                    with patch.dict(os.environ, {"SOURCE_REPO": "owner/source"}), \
+                            patch.object(checks.subprocess, "run", side_effect=download):
+                        if body == payload:
+                            checks.download()
+                            self.assertEqual((Path("dist") / name).read_bytes(), payload)
+                        else:
+                            with self.assertRaises(checks.Rejected):
+                                checks.download()
+                finally:
+                    os.chdir(previous)
 
 
 if __name__ == "__main__":
