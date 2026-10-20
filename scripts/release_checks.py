@@ -119,7 +119,9 @@ def provenance():
     require(len(builds) == 1, "missing or ambiguous source build job")
     # Dispatch inputs and release metadata are mutable. Bind both to the independent,
     # GitHub-hosted log of the successful canonical build job before trusting assets.
-    log = subprocess.check_output(["gh", "api", f"repos/{repo}/actions/jobs/{builds[0]['id']}/logs"], text=True)
+    # Capture raw log bytes for validation; never render their terminal controls.
+    log = subprocess.check_output(["gh", "api", "--allow-escape-sequences",
+                                   f"repos/{repo}/actions/jobs/{builds[0]['id']}/logs"], text=True)
     check_build_record(log, release_id, expected_hash)
     require(api(f"repos/{repo}").get("private") is True, "handoff repository must be private")
     release = api(f"repos/{repo}/releases/{release_id}")
@@ -137,7 +139,7 @@ def download():
     for name, record in files.items():
         target = directory / name
         with target.open("xb") as output:
-            subprocess.run(["gh", "api", f"repos/{repo}/releases/assets/{record['id']}",
+            subprocess.run(["gh", "api", "--allow-escape-sequences", f"repos/{repo}/releases/assets/{record['id']}",
                             "-H", "Accept: application/octet-stream"], stdout=output, check=True)
         require(target.stat().st_size == record["size"], "download size mismatch")
         with target.open("rb") as source:
